@@ -1,0 +1,145 @@
+import express from 'express';
+import db from '../config/db.js';
+import { authMiddleware } from '../middleware/auth.js';
+import { parseRecipeDescription } from '../utils/claude.js';
+
+const router = express.Router();
+
+// POST /recipes - Create a new recipe
+router.post('/', authMiddleware, async (req, res) => {
+  try {
+    const { title, description, cuisine_tag } = req.body;
+    const owner_id = req.user.user_id;
+
+    if (!title) {
+      return res.status(400).json({ error: 'Recipe title is required' });
+    }
+
+    const result = await db.query(
+      'INSERT INTO recipes (owner_id, title, description, cuisine_tag) VALUES ($1, $2, $3, $4) RETURNING *',
+      [owner_id, title, description, cuisine_tag]
+    );
+
+    res.status(201).json(result.rows[0]);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /recipes - List all recipes with filtering
+router.get('/', authMiddleware, async (req, res) => {
+  try {
+    const { view = 'all', search } = req.query;
+    const user_id = req.user.user_id;
+
+    let query = 'SELECT r.*, u.name as owner_name FROM recipes r JOIN users u ON r.owner_id = u.id WHERE r.deleted_at IS NULL';
+    const params = [];
+
+    if (view === 'mine') {
+      query += ' AND r.owner_id = $1';
+      params.push(user_id);
+    } else if (view === 'shared') {
+      query += ' AND r.id IN (SELECT recipe_id FROM recipe_shares WHERE shared_with_user_id = $1)';
+      params.push(user_id);
+    }
+
+    if (search) {
+      query += ` AND (r.title ILIKE $${params.length + 1} OR r.cuisine_tag ILIKE $${params.length + 1})`;
+      params.push(`%${search}%`);
+    }
+
+    query += ' ORDER BY r.created_at DESC';
+
+    const result = await db.query(query, params);
+    res.status(200).json({ recipes: result.rows, total_count: result.rows.length });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /recipes/:id - Get single recipe
+router.get('/:id', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const user_id = req.user.user_id;
+
+    const recipe = await db.query(
+      'SELECT r.*, u.name as owner_name FROM recipes r JOIN users u ON r.owner_id = u.id WHERE r.id = $1 AND r.deleted_at IS NULL',
+      [id]
+    );
+
+    if (recipe.rows.length === 0) {
+      return res.status(404).json({ error: 'Recipe not found' });
+    }
+
+    const ingredients = await db.query(
+      'SELECT * FROM ingredients WHERE recipe_id = $1 ORDER BY sort_order',
+      [id]
+    );
+
+    const steps = await db.query(
+      'SELECT * FROM steps WHERE recipe_id = $1 ORDER BY step_number',
+      [id]
+    );
+
+    const result = recipe.rows[0];
+    result.ingredients = ingredients.rows;
+    result.steps = steps.rows;
+    result.can_edit = result.owner_id === user_id;
+
+    res.status(200).json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// PUT /recipes/:id - Update recipe (owner only)
+router.put('/:id', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { title, description, cuisine_tag } = req.body;
+    const user_id = req.user.user_id;
+
+    const recipe = await db.query('SELECT owner_id FROM recipes WHERE id = $1', [id]);
+    if (recipe.rows.length === 0) {
+      return res.status(404).json({ error: 'Recipe not found' });
+    }
+
+    if (recipe.rows[0].owner_id !== user_id) {
+      return res.status(403).json({ error: 'You can only edit recipes you own' });
+    }
+
+    const result = await db.query(
+      'UPDATE recipes SET title = $1, description = $2, cuisine_tag = $3, updated_at = NOW() WHERE id = $4 RETURNING *',
+      [title, description, cuisine_tag, id]
+    );
+
+    res.status(200).json(result.rows[0]);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// DELETE /recipes/:id - Delete recipe (owner only)
+router.delete('/:id', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const user_id = req.user.user_id;
+
+    const recipe = await db.query('SELECT owner_id FROM recipes WHERE id = $1', [id]);
+    if (recipe.rows.length === 0) {
+      return res.status(404).json({ error: 'Recipe not found' });
+    }
+
+    if (recipe.rows[0].owner_id !== user_id) {
+      return res.status(403).json({ error: 'You can only delete recipes you own' });
+    }
+
+    await db.query('UPDATE recipes SET deleted_at = NOW() WHERE id = $1', [id]);
+    res.status(204).send();
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+export default router;
