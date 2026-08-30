@@ -24,8 +24,10 @@ router.post('/', authMiddleware, async (req, res) => {
     const recipe_id = recipeResult.rows[0].id;
 
     // Insert ingredients - handle null amounts
+    //for (const ing of parsed.ingredients) {
+    //  const amount = ing.amount ? parseFloat(ing.amount) : null;
     for (const ing of parsed.ingredients) {
-      const amount = ing.amount ? parseFloat(ing.amount) : null;
+      const amount = (ing.amount && ing.amount.toString().trim()) ? parseFloat(ing.amount) : null;
       await db.query(
         'INSERT INTO ingredients (recipe_id, name, amount, unit) VALUES ($1, $2, $3, $4)',
         [recipe_id, ing.name || 'Unknown', amount, ing.unit || '']
