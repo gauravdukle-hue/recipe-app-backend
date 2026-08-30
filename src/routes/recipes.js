@@ -5,7 +5,6 @@ import { parseRecipeDescription } from '../utils/claude.js';
 
 const router = express.Router();
 
-// POST /recipes - Create recipe with Claude parsing
 router.post('/', authMiddleware, async (req, res) => {
   try {
     const { title, description, cuisine_tag } = req.body;
@@ -15,10 +14,8 @@ router.post('/', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Title and description required' });
     }
 
-    // Parse with Claude
     const parsed = await parseRecipeDescription(description);
 
-    // Insert recipe
     const recipeResult = await db.query(
       'INSERT INTO recipes (owner_id, title, description, cuisine_tag) VALUES ($1, $2, $3, $4) RETURNING id, title',
       [user_id, title, description, cuisine_tag]
@@ -26,11 +23,12 @@ router.post('/', authMiddleware, async (req, res) => {
 
     const recipe_id = recipeResult.rows[0].id;
 
-    // Insert ingredients
+    // Insert ingredients - handle null amounts
     for (const ing of parsed.ingredients) {
+      const amount = ing.amount ? parseFloat(ing.amount) : null;
       await db.query(
         'INSERT INTO ingredients (recipe_id, name, amount, unit) VALUES ($1, $2, $3, $4)',
-        [recipe_id, ing.name, ing.amount, ing.unit]
+        [recipe_id, ing.name || 'Unknown', amount, ing.unit || '']
       );
     }
 
@@ -38,7 +36,7 @@ router.post('/', authMiddleware, async (req, res) => {
     for (let i = 0; i < parsed.steps.length; i++) {
       await db.query(
         'INSERT INTO steps (recipe_id, step_number, instruction) VALUES ($1, $2, $3)',
-        [recipe_id, i + 1, parsed.steps[i].instruction]
+        [recipe_id, i + 1, parsed.steps[i].instruction || parsed.steps[i]]
       );
     }
 
@@ -47,36 +45,24 @@ router.post('/', authMiddleware, async (req, res) => {
       title: recipeResult.rows[0].title,
       ingredients: parsed.ingredients,
       steps: parsed.steps,
-      message: 'Recipe created and parsed successfully'
+      message: 'Recipe created successfully'
     });
   } catch (error) {
     console.error('Create recipe error:', error);
-    res.status(500).json({
-      error: 'Internal server error',
-      details: error.message
-    });
+    res.status(500).json({ error: error.message });
   }
 });
 
-// GET /recipes - List all recipes with filtering
 router.get('/', authMiddleware, async (req, res) => {
   try {
     const { view = 'all', search } = req.query;
     const user_id = req.user.user_id;
 
     let query = `
-      SELECT 
-        r.id,
-        r.title,
-        r.cuisine_tag,
-        r.owner_id,
-        u.name as owner_name,
-        r.created_at,
-        (SELECT COUNT(*) FROM ingredients WHERE recipe_id = r.id) as ingredient_count,
-        (SELECT COUNT(*) FROM steps WHERE recipe_id = r.id) as step_count
-      FROM recipes r 
-      JOIN users u ON r.owner_id = u.id 
-      WHERE r.deleted_at IS NULL
+      SELECT r.id, r.title, r.cuisine_tag, r.owner_id, u.name as owner_name, r.created_at,
+             (SELECT COUNT(*) FROM ingredients WHERE recipe_id = r.id) as ingredient_count,
+             (SELECT COUNT(*) FROM steps WHERE recipe_id = r.id) as step_count
+      FROM recipes r JOIN users u ON r.owner_id = u.id WHERE r.deleted_at IS NULL
     `;
     const params = [];
 
@@ -94,7 +80,6 @@ router.get('/', authMiddleware, async (req, res) => {
     }
 
     query += ' ORDER BY r.created_at DESC';
-
     const result = await db.query(query, params);
     res.status(200).json(result.rows);
   } catch (error) {
@@ -103,7 +88,6 @@ router.get('/', authMiddleware, async (req, res) => {
   }
 });
 
-// GET /recipes/:id - Get single recipe with details
 router.get('/:id', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
@@ -119,129 +103,76 @@ router.get('/:id', authMiddleware, async (req, res) => {
     }
 
     const recipe = recipeResult.rows[0];
-    const can_edit = recipe.owner_id === user_id;
-
-    const ingredientsResult = await db.query(
-      'SELECT * FROM ingredients WHERE recipe_id = $1 ORDER BY id',
-      [id]
-    );
-
-    const stepsResult = await db.query(
-      'SELECT * FROM steps WHERE recipe_id = $1 ORDER BY step_number',
-      [id]
-    );
+    const ingredientsResult = await db.query('SELECT * FROM ingredients WHERE recipe_id = $1 ORDER BY id', [id]);
+    const stepsResult = await db.query('SELECT * FROM steps WHERE recipe_id = $1 ORDER BY step_number', [id]);
 
     res.status(200).json({
       ...recipe,
       ingredients: ingredientsResult.rows,
       steps: stepsResult.rows,
-      can_edit
+      can_edit: recipe.owner_id === user_id
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// PUT /recipes/:id - Update recipe (owner only)
 router.put('/:id', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
     const { title, description, cuisine_tag } = req.body;
     const user_id = req.user.user_id;
 
-    const checkResult = await db.query(
-      'SELECT owner_id FROM recipes WHERE id = $1',
-      [id]
-    );
+    const checkResult = await db.query('SELECT owner_id FROM recipes WHERE id = $1', [id]);
+    if (checkResult.rows.length === 0) return res.status(404).json({ error: 'Recipe not found' });
+    if (checkResult.rows[0].owner_id !== user_id) return res.status(403).json({ error: 'Unauthorized' });
 
-    if (checkResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Recipe not found' });
-    }
-
-    if (checkResult.rows[0].owner_id !== user_id) {
-      return res.status(403).json({ error: 'Unauthorized' });
-    }
-
-    await db.query(
-      'UPDATE recipes SET title = $1, description = $2, cuisine_tag = $3 WHERE id = $4',
-      [title, description, cuisine_tag, id]
-    );
-
+    await db.query('UPDATE recipes SET title = $1, description = $2, cuisine_tag = $3 WHERE id = $4',
+      [title, description, cuisine_tag, id]);
     res.status(200).json({ message: 'Recipe updated' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// DELETE /recipes/:id - Soft delete (owner only)
 router.delete('/:id', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
     const user_id = req.user.user_id;
 
-    const checkResult = await db.query(
-      'SELECT owner_id FROM recipes WHERE id = $1',
-      [id]
-    );
+    const checkResult = await db.query('SELECT owner_id FROM recipes WHERE id = $1', [id]);
+    if (checkResult.rows.length === 0) return res.status(404).json({ error: 'Recipe not found' });
+    if (checkResult.rows[0].owner_id !== user_id) return res.status(403).json({ error: 'Unauthorized' });
 
-    if (checkResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Recipe not found' });
-    }
-
-    if (checkResult.rows[0].owner_id !== user_id) {
-      return res.status(403).json({ error: 'Unauthorized' });
-    }
-
-    await db.query(
-      'UPDATE recipes SET deleted_at = NOW() WHERE id = $1',
-      [id]
-    );
-
+    await db.query('UPDATE recipes SET deleted_at = NOW() WHERE id = $1', [id]);
     res.status(200).json({ message: 'Recipe deleted' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// POST /recipes/:id/photos
 router.post('/:id/photos', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
     const { photo_data, caption } = req.body;
     const user_id = req.user.user_id;
 
-    const checkResult = await db.query(
-      'SELECT owner_id FROM recipes WHERE id = $1',
-      [id]
-    );
+    const checkResult = await db.query('SELECT owner_id FROM recipes WHERE id = $1', [id]);
+    if (checkResult.rows.length === 0) return res.status(404).json({ error: 'Recipe not found' });
+    if (checkResult.rows[0].owner_id !== user_id) return res.status(403).json({ error: 'Unauthorized' });
 
-    if (checkResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Recipe not found' });
-    }
-
-    if (checkResult.rows[0].owner_id !== user_id) {
-      return res.status(403).json({ error: 'Unauthorized' });
-    }
-
-    const result = await db.query(
-      'INSERT INTO photos (recipe_id, photo_data, caption) VALUES ($1, $2, $3) RETURNING id',
-      [id, photo_data, caption]
-    );
-
+    const result = await db.query('INSERT INTO photos (recipe_id, photo_data, caption) VALUES ($1, $2, $3) RETURNING id',
+      [id, photo_data, caption]);
     res.status(201).json({ photo_id: result.rows[0].id, message: 'Photo uploaded' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// GET /recipes/:id/photos
 router.get('/:id/photos', async (req, res) => {
   try {
     const { id } = req.params;
-    const result = await db.query(
-      'SELECT * FROM photos WHERE recipe_id = $1 ORDER BY created_at DESC',
-      [id]
-    );
+    const result = await db.query('SELECT * FROM photos WHERE recipe_id = $1 ORDER BY created_at DESC', [id]);
     res.status(200).json(result.rows);
   } catch (error) {
     res.status(500).json({ error: error.message });
