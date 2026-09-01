@@ -20,6 +20,15 @@ import sys
 import tempfile
 import time
 
+# Must be set before torch or onnxruntime are imported. Both size their thread
+# pools from the host's CPU count, which on a container platform is far larger
+# than the slice we actually get — they then fail to spawn threads with
+# "Resource temporarily unavailable".
+THREADS = os.environ.get("NUM_THREADS", "2")
+os.environ.setdefault("OMP_NUM_THREADS", THREADS)
+os.environ.setdefault("MKL_NUM_THREADS", THREADS)
+os.environ.setdefault("OPENBLAS_NUM_THREADS", THREADS)
+
 import requests
 
 API_URL = os.environ.get("API_URL", "").rstrip("/")
@@ -73,7 +82,9 @@ def load_model():
     import torch
     from transformers import AutoModel
 
-    log("Loading model...")
+    torch.set_num_threads(int(THREADS))
+
+    log(f"Loading model... (threads={THREADS})")
     t0 = time.time()
     model = AutoModel.from_pretrained(MODEL_ID, trust_remote_code=True)
     log(f"Model ready in {time.time() - t0:.0f}s")

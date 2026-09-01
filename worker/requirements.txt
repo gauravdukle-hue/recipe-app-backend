@@ -1,3 +1,8 @@
+# CPU-only PyTorch. The default PyPI wheel pulls the full CUDA build, which
+# loads gigabytes of GPU libraries on a CPU container and exhausts memory.
+--index-url https://download.pytorch.org/whl/cpu
+--extra-index-url https://pypi.org/simple
+
 torch
 torchaudio
 transformers
