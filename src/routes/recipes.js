@@ -14,8 +14,9 @@ router.post('/', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Title and description required' });
     }
 
-    const parsed = await parseRecipeDescription(description);
-
+    // Create the recipe row FIRST. Parsing is enrichment, not a gate — a
+    // recipe that Claude can't parse (audio-only, unusual phrasing) must
+    // still save, or the recording has nothing to attach to.
     const recipeResult = await db.query(
       'INSERT INTO recipes (owner_id, title, description, cuisine_tag) VALUES ($1, $2, $3, $4) RETURNING id, title',
       [user_id, title, description, cuisine_tag]
@@ -23,18 +24,16 @@ router.post('/', authMiddleware, async (req, res) => {
 
     const recipe_id = recipeResult.rows[0].id;
 
-    // Insert ingredients - handle null amounts
-    //for (const ing of parsed.ingredients) {
-    //  const amount = ing.amount ? parseFloat(ing.amount) : null;
+    const parsed = await parseRecipeDescription(description);
+
     for (const ing of parsed.ingredients) {
       const amount = (ing.amount && ing.amount.toString().trim()) ? parseFloat(ing.amount) : null;
       await db.query(
         'INSERT INTO ingredients (recipe_id, name, amount, unit) VALUES ($1, $2, $3, $4)',
-        [recipe_id, ing.name || 'Unknown', amount, ing.unit || '']
+        [recipe_id, ing.name || 'Unknown', Number.isNaN(amount) ? null : amount, ing.unit || '']
       );
     }
 
-    // Insert steps
     for (let i = 0; i < parsed.steps.length; i++) {
       await db.query(
         'INSERT INTO steps (recipe_id, step_number, instruction) VALUES ($1, $2, $3)',
