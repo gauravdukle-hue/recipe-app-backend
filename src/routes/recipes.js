@@ -128,9 +128,45 @@ router.put('/:id', authMiddleware, async (req, res) => {
     if (checkResult.rows.length === 0) return res.status(404).json({ error: 'Recipe not found' });
     if (checkResult.rows[0].owner_id !== user_id) return res.status(403).json({ error: 'Unauthorized' });
 
+    const before = await db.query('SELECT description FROM recipes WHERE id = $1', [id]);
+    const descriptionChanged = (before.rows[0]?.description || '') !== (description || '');
+
     await db.query('UPDATE recipes SET title = $1, description = $2, cuisine_tag = $3 WHERE id = $4',
       [title, description, cuisine_tag, id]);
-    res.status(200).json({ message: 'Recipe updated' });
+
+    // Correcting a transcript is the main reason to edit, so the ingredients
+    // and steps have to be re-read from the new text — otherwise fixing a
+    // mangled ingredient name changes nothing anyone can see.
+    let parsed = { ingredients: [], steps: [] };
+
+    if (descriptionChanged && description && description.trim()) {
+      parsed = await parseRecipeDescription(description);
+
+      await db.query('DELETE FROM ingredients WHERE recipe_id = $1', [id]);
+      await db.query('DELETE FROM steps WHERE recipe_id = $1', [id]);
+
+      for (const ing of parsed.ingredients) {
+        const amount = (ing.amount && ing.amount.toString().trim()) ? parseFloat(ing.amount) : null;
+        await db.query(
+          'INSERT INTO ingredients (recipe_id, name, amount, unit) VALUES ($1, $2, $3, $4)',
+          [id, ing.name || 'Unknown', Number.isNaN(amount) ? null : amount, ing.unit || '']
+        );
+      }
+
+      for (let i = 0; i < parsed.steps.length; i++) {
+        await db.query(
+          'INSERT INTO steps (recipe_id, step_number, instruction) VALUES ($1, $2, $3)',
+          [id, i + 1, parsed.steps[i].instruction || parsed.steps[i]]
+        );
+      }
+    }
+
+    res.status(200).json({
+      message: 'Recipe updated',
+      reparsed: descriptionChanged,
+      ingredients: parsed.ingredients.length,
+      steps: parsed.steps.length
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
