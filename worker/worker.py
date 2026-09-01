@@ -38,6 +38,11 @@ DEFAULT_LANG = os.environ.get("LANG_CODE", "kok")
 DECODER = os.environ.get("DECODER", "ctc")
 POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "60"))
 MODEL_ID = os.environ.get("MODEL_ID", "ai4bharat/indic-conformer-600m-multilingual")
+GOOGLE_KEY = os.environ.get("GOOGLE_SPEECH_API_KEY", "")
+
+# English is not one of the 22 languages IndicConformer covers, so it goes to
+# Google Speech-to-Text instead. No model load, and far better accuracy.
+GOOGLE_LANGS = {"en": "en-US", "en-US": "en-US", "en-IN": "en-IN"}
 
 _running = True
 
@@ -129,6 +134,52 @@ def load_model():
     return model, torch
 
 
+def transcribe_google(path, language_code):
+    """Google Speech-to-Text. Chunks the audio because the synchronous
+    endpoint caps out around 60 seconds and recipes run longer."""
+    import io
+    import soundfile as sf
+
+    if not GOOGLE_KEY:
+        raise RuntimeError("GOOGLE_SPEECH_API_KEY not set on this service")
+
+    data, sr = sf.read(path, dtype="int16", always_2d=True)
+    mono = data[:, 0]
+    span = 50 * sr  # comfortably under the limit
+    pieces = []
+
+    for start in range(0, len(mono), span):
+        segment = mono[start:start + span]
+        if len(segment) < sr // 2:  # skip a sliver at the end
+            continue
+
+        buf = io.BytesIO()
+        sf.write(buf, segment, sr, format="WAV", subtype="PCM_16")
+        encoded = base64.b64encode(buf.getvalue()).decode("ascii")
+
+        resp = requests.post(
+            f"https://speech.googleapis.com/v1/speech:recognize?key={GOOGLE_KEY}",
+            json={
+                "config": {
+                    "encoding": "LINEAR16",
+                    "sampleRateHertz": sr,
+                    "languageCode": language_code,
+                    "enableAutomaticPunctuation": True,
+                },
+                "audio": {"content": encoded},
+            },
+            timeout=180,
+        )
+        resp.raise_for_status()
+
+        for result in resp.json().get("results", []):
+            alternatives = result.get("alternatives") or []
+            if alternatives:
+                pieces.append(alternatives[0].get("transcript", "").strip())
+
+    return " ".join(p for p in pieces if p)
+
+
 def transcribe(model, torch, path, lang):
     # soundfile rather than torchaudio.load: recent torchaudio delegates
     # decoding to TorchCodec. The app always writes 16 kHz mono PCM WAV.
@@ -156,7 +207,10 @@ def process_queue(headers):
         return 0
 
     log(f"{len(queue)} recording(s) pending")
-    model, torch = load_model()
+
+    # Loaded on first use. A queue of only English recordings never pays for it.
+    model = None
+    torch = None
     done = 0
 
     try:
@@ -186,9 +240,14 @@ def process_queue(headers):
                 # recorded. Falling back to the global default only matters
                 # for rows saved before the picker existed.
                 lang = item.get("language") or DEFAULT_LANG
-
                 t0 = time.time()
-                text = transcribe(model, torch, tmp_path, lang)
+
+                if lang in GOOGLE_LANGS:
+                    text = transcribe_google(tmp_path, GOOGLE_LANGS[lang])
+                else:
+                    if model is None:
+                        model, torch = load_model()
+                    text = transcribe(model, torch, tmp_path, lang)
                 log(f"  {time.time() - t0:.0f}s -> {text[:120]}")
 
                 pr = requests.patch(
@@ -222,10 +281,11 @@ def process_queue(headers):
                     os.unlink(tmp_path)
 
     finally:
-        # Release the model so idle memory drops back to ~150 MB.
-        del model
-        gc.collect()
-        log("Model released")
+        if model is not None:
+            # Release it so idle memory drops back to ~150 MB.
+            del model
+            gc.collect()
+            log("Model released")
 
     return done
 
