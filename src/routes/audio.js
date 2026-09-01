@@ -1,6 +1,7 @@
 import express from 'express';
 import db from '../config/db.js';
 import { authMiddleware } from '../middleware/auth.js';
+import { parseRecipeDescription } from '../utils/claude.js';
 
 // NOTE: named import with braces. middleware/auth.js uses `export const
 // authMiddleware`. A default import crashes the whole server at startup and
@@ -136,7 +137,53 @@ router.patch('/:audioId/transcript', authMiddleware, async (req, res) => {
       return res.status(404).json({ error: 'Recording not found' });
     }
 
-    res.json({ message: 'Transcript saved', recipe_id: result.rows[0].recipe_id });
+    const recipe_id = result.rows[0].recipe_id;
+
+    // The transcript is now the recipe's description, replacing the
+    // placeholder written when the recording was saved. Only overwrite a
+    // placeholder — never clobber text someone actually typed or corrected.
+    const existing = await db.query(
+      'SELECT description FROM recipes WHERE id = $1',
+      [recipe_id]
+    );
+    const current = existing.rows[0]?.description || '';
+    const isPlaceholder = !current.trim() || /transcription pending/i.test(current);
+
+    let parsed = { ingredients: [], steps: [] };
+
+    if (isPlaceholder && transcript.trim()) {
+      await db.query('UPDATE recipes SET description = $1 WHERE id = $2', [transcript, recipe_id]);
+
+      // Re-parsing is safe to repeat: clear any prior rows first so a second
+      // transcription doesn't duplicate every ingredient.
+      await db.query('DELETE FROM ingredients WHERE recipe_id = $1', [recipe_id]);
+      await db.query('DELETE FROM steps WHERE recipe_id = $1', [recipe_id]);
+
+      parsed = await parseRecipeDescription(transcript);
+
+      for (const ing of parsed.ingredients) {
+        const amount = (ing.amount && ing.amount.toString().trim()) ? parseFloat(ing.amount) : null;
+        await db.query(
+          'INSERT INTO ingredients (recipe_id, name, amount, unit) VALUES ($1, $2, $3, $4)',
+          [recipe_id, ing.name || 'Unknown', Number.isNaN(amount) ? null : amount, ing.unit || '']
+        );
+      }
+
+      for (let i = 0; i < parsed.steps.length; i++) {
+        await db.query(
+          'INSERT INTO steps (recipe_id, step_number, instruction) VALUES ($1, $2, $3)',
+          [recipe_id, i + 1, parsed.steps[i].instruction || parsed.steps[i]]
+        );
+      }
+    }
+
+    res.json({
+      message: 'Transcript saved',
+      recipe_id,
+      parsed_ingredients: parsed.ingredients.length,
+      parsed_steps: parsed.steps.length,
+      description_updated: isPlaceholder
+    });
   } catch (err) {
     console.error('Transcript write failed:', err);
     res.status(500).json({ error: 'Failed to save transcript' });
