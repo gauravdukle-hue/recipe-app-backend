@@ -78,11 +78,49 @@ def login():
     return token
 
 
+def _cap_onnxruntime_threads(threads):
+    """Force every ONNX Runtime session to a small, fixed thread pool.
+
+    ORT sizes its pool from the host's core count and ignores OMP_NUM_THREADS.
+    On a container that means it tries to spawn far more threads than the
+    cgroup allows and dies with "Resource temporarily unavailable". The model
+    builds its own sessions internally, so the only place to intervene is the
+    InferenceSession constructor itself.
+    """
+    import onnxruntime as ort
+
+    original = ort.InferenceSession
+
+    class CappedSession(original):
+        def __init__(self, *args, **kwargs):
+            opts = kwargs.get("sess_options")
+            positional = len(args) > 1 and isinstance(args[1], ort.SessionOptions)
+            if positional:
+                opts = args[1]
+            if opts is None:
+                opts = ort.SessionOptions()
+
+            opts.intra_op_num_threads = threads
+            opts.inter_op_num_threads = 1
+            opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+
+            if positional:
+                args = args[:1] + (opts,) + args[2:]
+            else:
+                kwargs["sess_options"] = opts
+
+            super().__init__(*args, **kwargs)
+
+    ort.InferenceSession = CappedSession
+    log(f"ONNX Runtime sessions capped at {threads} thread(s)")
+
+
 def load_model():
     import torch
     from transformers import AutoModel
 
     torch.set_num_threads(int(THREADS))
+    _cap_onnxruntime_threads(int(THREADS))
 
     log(f"Loading model... (threads={THREADS})")
     t0 = time.time()
