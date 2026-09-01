@@ -34,7 +34,7 @@ import requests
 API_URL = os.environ.get("API_URL", "").rstrip("/")
 EMAIL = os.environ.get("WORKER_EMAIL", "")
 PASSWORD = os.environ.get("WORKER_PASSWORD", "")
-LANG = os.environ.get("LANG_CODE", "kok")
+DEFAULT_LANG = os.environ.get("LANG_CODE", "kok")
 DECODER = os.environ.get("DECODER", "ctc")
 POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "60"))
 MODEL_ID = os.environ.get("MODEL_ID", "ai4bharat/indic-conformer-600m-multilingual")
@@ -129,7 +129,7 @@ def load_model():
     return model, torch
 
 
-def transcribe(model, torch, path):
+def transcribe(model, torch, path, lang):
     # soundfile rather than torchaudio.load: recent torchaudio delegates
     # decoding to TorchCodec. The app always writes 16 kHz mono PCM WAV.
     import soundfile as sf
@@ -143,7 +143,7 @@ def transcribe(model, torch, path):
         wav = torchaudio.transforms.Resample(orig_freq=sr, new_freq=16000)(wav)
 
     with torch.no_grad():
-        return model(wav, LANG, DECODER)
+        return model(wav, lang, DECODER)
 
 
 def process_queue(headers):
@@ -165,7 +165,10 @@ def process_queue(headers):
                 break
 
             audio_id = item["id"]
-            log(f"[{audio_id}] {item.get('title', '?')} ({item.get('duration_seconds')}s)")
+            log(
+                f"[{audio_id}] {item.get('title', '?')} "
+                f"({item.get('duration_seconds')}s, {item.get('language') or DEFAULT_LANG})"
+            )
             tmp_path = None
 
             try:
@@ -179,8 +182,13 @@ def process_queue(headers):
                     tmp.write(base64.b64decode(audio_b64))
                     tmp_path = tmp.name
 
+                # Each recording carries the language chosen when it was
+                # recorded. Falling back to the global default only matters
+                # for rows saved before the picker existed.
+                lang = item.get("language") or DEFAULT_LANG
+
                 t0 = time.time()
-                text = transcribe(model, torch, tmp_path)
+                text = transcribe(model, torch, tmp_path, lang)
                 log(f"  {time.time() - t0:.0f}s -> {text[:120]}")
 
                 pr = requests.patch(
@@ -224,7 +232,7 @@ def process_queue(headers):
 
 def main():
     check_config()
-    log(f"Worker starting. Polling {API_URL} every {POLL_SECONDS}s. lang={LANG} decoder={DECODER}")
+    log(f"Worker starting. Polling {API_URL} every {POLL_SECONDS}s. default lang={DEFAULT_LANG} decoder={DECODER}")
 
     token = None
     headers = {}
