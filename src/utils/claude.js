@@ -5,7 +5,7 @@ dotenv.config();
 
 const CLAUDE_API_KEY = process.env.CLAUDE_API_KEY;
 
-const EMPTY = { ingredients: [], steps: [] };
+const EMPTY = { ingredients: [], steps: [], glossary: [] };
 
 // Placeholder written by the frontend when a recipe is recorded but not yet
 // typed or transcribed. There is nothing to parse, so don't spend an API call
@@ -50,13 +50,25 @@ export const parseRecipeDescription = async (description) => {
       'https://api.anthropic.com/v1/messages',
       {
         model: 'claude-opus-4-8',
-        max_tokens: 1024,
+        max_tokens: 2048,
         system:
-          'You are a recipe parsing assistant. Extract ingredients and steps from a recipe description. ' +
-          'Return ONLY valid JSON with this structure: ' +
-          '{"ingredients": [{"amount": "2", "unit": "lbs", "name": "white fish"}], ' +
-          '"steps": [{"step_number": 1, "instruction": "Clean the fish"}]}. ' +
-          'If the text does not contain a recipe, return {"ingredients": [], "steps": []}. ' +
+          'You are a recipe parsing assistant for a Goan family cookbook. Input may be in ' +
+          'English, or in Konkani or Marathi written in Devanagari, and may come from ' +
+          'imperfect speech recognition.\n\n' +
+          'Write ingredient names and step instructions in ROMAN SCRIPT. Do not translate ' +
+          'the cooking language into English: transliterate it, keeping the original words ' +
+          '(khobrem, kando, tikhat pitho, sanna). Keep the speaker\'s own phrasing and word ' +
+          'order. Text already in English stays as it is.\n\n' +
+          'Then list every non-English term you used in "glossary", with a short English ' +
+          'meaning, so a reader who does not know the language can follow the recipe. ' +
+          'List each term once.\n\n' +
+          'Return ONLY valid JSON with this structure:\n' +
+          '{"ingredients": [{"amount": "2", "unit": "cups", "name": "khobrem"}], ' +
+          '"steps": [{"step_number": 1, "instruction": "Khobrem thodem fry korpachem."}], ' +
+          '"glossary": [{"term": "khobrem", "meaning": "grated coconut"}]}\n\n' +
+          'If a word is garbled and you cannot identify it, keep it as transliterated and ' +
+          'give its meaning as "unclear" rather than guessing a plausible ingredient. ' +
+          'If the text contains no recipe, return empty arrays. ' +
           'Never explain, apologize, or write anything outside the JSON object.',
         messages: [
           {
@@ -84,7 +96,8 @@ export const parseRecipeDescription = async (description) => {
 
     return {
       ingredients: Array.isArray(parsed.ingredients) ? parsed.ingredients : [],
-      steps: Array.isArray(parsed.steps) ? parsed.steps : []
+      steps: Array.isArray(parsed.steps) ? parsed.steps : [],
+      glossary: Array.isArray(parsed.glossary) ? parsed.glossary : []
     };
   } catch (error) {
     console.error('Claude error:', error.response?.data || error.message);

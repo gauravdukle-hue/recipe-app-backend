@@ -26,6 +26,9 @@ router.post('/', authMiddleware, async (req, res) => {
 
     const parsed = await parseRecipeDescription(description);
 
+    await db.query('UPDATE recipes SET glossary = $1 WHERE id = $2',
+      [JSON.stringify(parsed.glossary || []), recipe_id]);
+
     for (const ing of parsed.ingredients) {
       const amount = (ing.amount && ing.amount.toString().trim()) ? parseFloat(ing.amount) : null;
       await db.query(
@@ -142,6 +145,9 @@ router.put('/:id', authMiddleware, async (req, res) => {
     if (descriptionChanged && description && description.trim()) {
       parsed = await parseRecipeDescription(description);
 
+      await db.query('UPDATE recipes SET glossary = $1 WHERE id = $2',
+        [JSON.stringify(parsed.glossary || []), id]);
+
       await db.query('DELETE FROM ingredients WHERE recipe_id = $1', [id]);
       await db.query('DELETE FROM steps WHERE recipe_id = $1', [id]);
 
@@ -185,6 +191,69 @@ router.delete('/:id', authMiddleware, async (req, res) => {
     res.status(200).json({ message: 'Recipe deleted' });
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+const REACTIONS = ['like', 'love'];
+
+// Counts for a recipe, plus which ones this user has already given.
+async function reactionSummary(recipe_id, user_id) {
+  const counts = await db.query(
+    `SELECT reaction, COUNT(*)::int AS count
+       FROM recipe_reactions WHERE recipe_id = $1 GROUP BY reaction`,
+    [recipe_id]
+  );
+  const mine = await db.query(
+    'SELECT reaction FROM recipe_reactions WHERE recipe_id = $1 AND user_id = $2',
+    [recipe_id, user_id]
+  );
+
+  const summary = { like: 0, love: 0, mine: [] };
+  counts.rows.forEach((r) => { summary[r.reaction] = r.count; });
+  summary.mine = mine.rows.map((r) => r.reaction);
+  return summary;
+}
+
+router.get('/:id/reactions', authMiddleware, async (req, res) => {
+  try {
+    res.json(await reactionSummary(req.params.id, req.user.user_id));
+  } catch (error) {
+    console.error('Reaction fetch failed:', error);
+    res.status(500).json({ error: 'Could not load reactions' });
+  }
+});
+
+// Toggle. Clicking an existing reaction removes it, so the UNIQUE constraint
+// on (recipe_id, user_id, reaction) is never hit twice by the same person.
+router.post('/:id/reactions', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reaction } = req.body;
+    const user_id = req.user.user_id;
+
+    if (!REACTIONS.includes(reaction)) {
+      return res.status(400).json({ error: 'Unknown reaction' });
+    }
+
+    const existing = await db.query(
+      'SELECT id FROM recipe_reactions WHERE recipe_id = $1 AND user_id = $2 AND reaction = $3',
+      [id, user_id, reaction]
+    );
+
+    if (existing.rows.length > 0) {
+      await db.query('DELETE FROM recipe_reactions WHERE id = $1', [existing.rows[0].id]);
+    } else {
+      await db.query(
+        `INSERT INTO recipe_reactions (recipe_id, user_id, reaction) VALUES ($1, $2, $3)
+         ON CONFLICT (recipe_id, user_id, reaction) DO NOTHING`,
+        [id, user_id, reaction]
+      );
+    }
+
+    res.json(await reactionSummary(id, user_id));
+  } catch (error) {
+    console.error('Reaction toggle failed:', error);
+    res.status(500).json({ error: 'Could not save reaction' });
   }
 });
 

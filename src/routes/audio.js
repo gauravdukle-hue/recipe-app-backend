@@ -161,6 +161,9 @@ router.patch('/:audioId/transcript', authMiddleware, async (req, res) => {
 
       parsed = await parseRecipeDescription(transcript);
 
+      await db.query('UPDATE recipes SET glossary = $1 WHERE id = $2',
+        [JSON.stringify(parsed.glossary || []), recipe_id]);
+
       for (const ing of parsed.ingredients) {
         const amount = (ing.amount && ing.amount.toString().trim()) ? parseFloat(ing.amount) : null;
         await db.query(
