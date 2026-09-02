@@ -16,9 +16,12 @@ import base64
 import gc
 import os
 import signal
+import socket
 import sys
 import tempfile
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # Must be set before torch or onnxruntime are imported. Both size their thread
 # pools from the host's CPU count, which on a container platform is far larger
@@ -37,6 +40,11 @@ PASSWORD = os.environ.get("WORKER_PASSWORD", "")
 DEFAULT_LANG = os.environ.get("LANG_CODE", "kok")
 DECODER = os.environ.get("DECODER", "ctc")
 POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "60"))
+WAKE_PORT = int(os.environ.get("PORT", "8080"))
+
+# Set by the wake endpoint so an upload is picked up immediately. Polling
+# stays as the fallback — a missed ping must not strand a recording.
+wake_event = threading.Event()
 MODEL_ID = os.environ.get("MODEL_ID", "ai4bharat/indic-conformer-600m-multilingual")
 GOOGLE_KEY = os.environ.get("GOOGLE_SPEECH_API_KEY", "")
 
@@ -59,6 +67,38 @@ def handle_stop(signum, frame):
 
 signal.signal(signal.SIGTERM, handle_stop)
 signal.signal(signal.SIGINT, handle_stop)
+
+
+class WakeHandler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        wake_event.set()
+        self.send_response(202)
+        self.end_headers()
+        self.wfile.write(b"ok")
+
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"ok")
+
+    def log_message(self, *args):
+        pass  # the worker does its own logging
+
+
+class WakeServer(HTTPServer):
+    # Railway's private network is IPv6 only, so binding to 0.0.0.0 would
+    # leave the backend unable to reach this.
+    address_family = socket.AF_INET6
+
+
+def start_wake_server():
+    try:
+        server = WakeServer(("::", WAKE_PORT), WakeHandler)
+    except Exception as err:
+        log(f"Wake endpoint unavailable ({err}); polling only")
+        return
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    log(f"Wake endpoint listening on port {WAKE_PORT}")
 
 
 def check_config():
@@ -293,6 +333,7 @@ def process_queue(headers):
 def main():
     check_config()
     log(f"Worker starting. Polling {API_URL} every {POLL_SECONDS}s. default lang={DEFAULT_LANG} decoder={DECODER}")
+    start_wake_server()
 
     token = None
     headers = {}
@@ -316,10 +357,10 @@ def main():
         except Exception as err:
             log(f"Error: {err}")
 
-        for _ in range(POLL_SECONDS):
-            if not _running:
-                break
-            time.sleep(1)
+        # Returns early when the backend pings /wake after an upload.
+        if wake_event.wait(timeout=POLL_SECONDS):
+            wake_event.clear()
+            log("Woken by upload")
 
     log("Worker stopped.")
 

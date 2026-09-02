@@ -9,6 +9,18 @@ import { parseRecipeDescription } from '../utils/claude.js';
 
 const router = express.Router();
 
+// Nudge the transcription worker over Railway's private network so an upload
+// is picked up at once instead of waiting for its next poll. Fire and forget:
+// the worker polls anyway, so a failed ping only costs a little latency.
+function wakeWorker() {
+  const url = process.env.WORKER_URL;
+  if (!url) return;
+  fetch(`${url.replace(/\/$/, '')}/wake`, {
+    method: 'POST',
+    signal: AbortSignal.timeout(3000)
+  }).catch(() => {});
+}
+
 // Upload a recording for a recipe.
 router.post('/:recipeId', authMiddleware, async (req, res) => {
   try {
@@ -39,6 +51,8 @@ router.post('/:recipeId', authMiddleware, async (req, res) => {
         language || 'gom'
       ]
     );
+
+    wakeWorker();
 
     res.status(201).json({
       audio_id: result.rows[0].id,
