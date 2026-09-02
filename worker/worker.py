@@ -46,7 +46,9 @@ WAKE_PORT = int(os.environ.get("PORT", "8080"))
 # stays as the fallback — a missed ping must not strand a recording.
 wake_event = threading.Event()
 MODEL_ID = os.environ.get("MODEL_ID", "ai4bharat/indic-conformer-600m-multilingual")
-GOOGLE_KEY = os.environ.get("GOOGLE_SPEECH_API_KEY", "")
+# Two accepted names. GOOGLE_SPEECH_API_KEY refused to reach the container on
+# Railway no matter how it was set or redeployed, so GOOGLE_KEY is the fallback.
+GOOGLE_KEY = os.environ.get("GOOGLE_SPEECH_API_KEY") or os.environ.get("GOOGLE_KEY", "")
 
 # English is not one of the 22 languages IndicConformer covers, so it goes to
 # Google Speech-to-Text instead. No model load, and far better accuracy.
@@ -181,7 +183,7 @@ def transcribe_google(path, language_code):
     import soundfile as sf
 
     if not GOOGLE_KEY:
-        raise RuntimeError("GOOGLE_SPEECH_API_KEY not set on this service")
+        raise RuntimeError("No Google key: set GOOGLE_KEY on the worker service")
 
     data, sr = sf.read(path, dtype="int16", always_2d=True)
     mono = data[:, 0]
