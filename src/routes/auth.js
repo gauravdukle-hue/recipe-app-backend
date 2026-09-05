@@ -184,11 +184,20 @@ router.post('/google', async (req, res) => {
 });
 
 // GET /auth/me
-router.get('/me', authMiddleware, (req, res) => {
-  res.status(200).json({
-    user_id: req.user.user_id,
-    email: req.user.email
-  });
+router.get('/me', authMiddleware, async (req, res) => {
+  try {
+    // The JWT carries only id and email, so the name comes from the row. It is
+    // what Google gave us at sign-in, which saves relatives typing it.
+    const result = await db.query('SELECT name FROM users WHERE id = $1', [req.user.user_id]);
+    res.status(200).json({
+      user_id: req.user.user_id,
+      email: req.user.email,
+      name: result.rows[0]?.name || null
+    });
+  } catch (error) {
+    console.error('auth/me error:', error);
+    res.status(200).json({ user_id: req.user.user_id, email: req.user.email, name: null });
+  }
 });
 
 export default router;
