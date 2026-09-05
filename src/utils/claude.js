@@ -55,16 +55,19 @@ export const parseRecipeDescription = async (description) => {
           'You are a recipe parsing assistant for a Goan family cookbook. Input may be in ' +
           'English, or in Konkani or Marathi written in Devanagari, and may come from ' +
           'imperfect speech recognition.\n\n' +
-          'Write ingredient names and step instructions in ROMAN SCRIPT. Do not translate ' +
-          'the cooking language into English: transliterate it, keeping the original words ' +
-          '(khobrem, kando, tikhat pitho, sanna). Keep the speaker\'s own phrasing and word ' +
-          'order. Text already in English stays as it is.\n\n' +
-          'Then list every non-English term you used in "glossary", with a short English ' +
-          'meaning, so a reader who does not know the language can follow the recipe. ' +
-          'List each term once.\n\n' +
+          'Write STEP INSTRUCTIONS in plain English, so anyone in the family can follow ' +
+          'them. Translate the cooking actions and quantities.\n\n' +
+          'But keep INGREDIENT NAMES in the original language, transliterated into roman ' +
+          'script (khobrem, kando, tikhat pitho, bimbli). Do not translate them to English ' +
+          'in the ingredient list, and do not translate them inside the steps either — ' +
+          'write "Fry the khobrem lightly", not "Fry the grated coconut lightly". These are ' +
+          'the names the family uses and the names you would ask for in a shop.\n\n' +
+          'Then list every non-English ingredient name in "glossary" with a short English ' +
+          'meaning, so a reader who does not know the language can still follow along. ' +
+          'List each term once. Ingredients already in English need no glossary entry.\n\n' +
           'Return ONLY valid JSON with this structure:\n' +
           '{"ingredients": [{"amount": "2", "unit": "cups", "name": "khobrem"}], ' +
-          '"steps": [{"step_number": 1, "instruction": "Khobrem thodem fry korpachem."}], ' +
+          '"steps": [{"step_number": 1, "instruction": "Fry the khobrem lightly."}], ' +
           '"glossary": [{"term": "khobrem", "meaning": "grated coconut"}]}\n\n' +
           'If a word is garbled and you cannot identify it, keep it as transliterated and ' +
           'give its meaning as "unclear" rather than guessing a plausible ingredient. ' +
