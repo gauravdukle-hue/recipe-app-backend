@@ -1,4 +1,5 @@
 import express from 'express';
+import { randomBytes } from 'crypto';
 import db from '../config/db.js';
 import { hashPassword, comparePassword, generateToken } from '../utils/auth.js';
 import { authMiddleware } from '../middleware/auth.js';
@@ -103,6 +104,82 @@ router.post('/login', async (req, res) => {
       error: 'Internal server error',
       details: error.message
     });
+  }
+});
+
+// POST /auth/google
+// Verified against Google's tokeninfo endpoint rather than a library, to keep
+// the backend free of another dependency. The two checks that matter: the
+// token was issued for OUR client id, and the email is verified. Skipping the
+// audience check would let a token minted for any other site log someone in.
+router.post('/google', async (req, res) => {
+  try {
+    const { credential } = req.body;
+    const clientId = process.env.GOOGLE_CLIENT_ID;
+
+    if (!credential) {
+      return res.status(400).json({ error: 'Invalid request', details: 'Missing credential' });
+    }
+    if (!clientId) {
+      return res.status(500).json({
+        error: 'Not configured',
+        details: 'GOOGLE_CLIENT_ID is not set on the server'
+      });
+    }
+
+    const verify = await fetch(
+      `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(credential)}`,
+      { signal: AbortSignal.timeout(10000) }
+    );
+
+    if (!verify.ok) {
+      return res.status(401).json({ error: 'Unauthorized', details: 'Google token rejected' });
+    }
+
+    const payload = await verify.json();
+
+    if (payload.aud !== clientId) {
+      return res.status(401).json({ error: 'Unauthorized', details: 'Token issued for another app' });
+    }
+    if (payload.email_verified !== 'true' && payload.email_verified !== true) {
+      return res.status(401).json({ error: 'Unauthorized', details: 'Google email is not verified' });
+    }
+
+    const email = (payload.email || '').toLowerCase();
+    const name = payload.name || email.split('@')[0];
+
+    if (!email) {
+      return res.status(401).json({ error: 'Unauthorized', details: 'No email on the Google account' });
+    }
+
+    let result = await db.query(
+      'SELECT id, email, name FROM users WHERE lower(email) = $1',
+      [email]
+    );
+
+    if (result.rows.length === 0) {
+      // First sign-in creates the account. password_hash is filled with random
+      // bytes that nothing can match, so this account can never be entered
+      // through the email/password route.
+      const unusable = await hashPassword(randomBytes(32).toString('hex'));
+      result = await db.query(
+        'INSERT INTO users (email, password_hash, name, auth_provider) VALUES ($1, $2, $3, $4) RETURNING id, email, name',
+        [email, unusable, name, 'google']
+      );
+    }
+
+    const user = result.rows[0];
+    const token = generateToken(user.id, user.email);
+
+    res.status(200).json({
+      user_id: user.id,
+      email: user.email,
+      name: user.name,
+      auth_token: token
+    });
+  } catch (error) {
+    console.error('Google auth error:', error);
+    res.status(500).json({ error: 'Internal server error', details: error.message });
   }
 });
 
