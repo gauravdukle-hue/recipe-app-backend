@@ -5,7 +5,7 @@ dotenv.config();
 
 const CLAUDE_API_KEY = process.env.CLAUDE_API_KEY;
 
-const EMPTY = { ingredients: [], steps: [], glossary: [] };
+const EMPTY = { ingredients: [], steps: [], glossary: [], language_mismatch: null };
 
 // Placeholder written by the frontend when a recipe is recorded but not yet
 // typed or transcribed. There is nothing to parse, so don't spend an API call
@@ -37,7 +37,7 @@ const extractJson = (raw) => {
  * Best effort. Returns { ingredients, steps } and never throws — a recipe that
  * Claude can't parse should still save with its description and audio intact.
  */
-export const parseRecipeDescription = async (description) => {
+export const parseRecipeDescription = async (description, expectedLanguage) => {
   if (isPlaceholder(description)) return EMPTY;
 
   if (!CLAUDE_API_KEY) {
@@ -70,16 +70,27 @@ export const parseRecipeDescription = async (description) => {
           'Return ONLY valid JSON with this structure:\n' +
           '{"ingredients": [{"amount": "2", "unit": "cups", "name": "khobrem (grated coconut)"}], ' +
           '"steps": [{"step_number": 1, "instruction": "Fry the khobrem lightly until golden."}], ' +
-          '"glossary": [{"term": "khobrem", "meaning": "grated coconut"}]}\n\n' +
+          '"glossary": [{"term": "khobrem", "meaning": "grated coconut"}], ' +
+          '"language_mismatch": null}\n\n' +
           'Convert quantities into standard English measures where the original is clear. ' +
           'If a word is garbled and you cannot identify it, keep it as transliterated and ' +
           'give its meaning as "unclear" rather than guessing a plausible ingredient. ' +
+          'Also judge the LANGUAGE. The transcript was produced by a model told to ' +
+          'expect a particular language, and the speaker may have used a different one — ' +
+          'Hindi and Marathi transcribed by a Konkani model produce plausible-looking ' +
+          'Devanagari rather than obvious nonsense. If the text clearly reads as a ' +
+          'different language than expected, set "language_mismatch" to the ISO code you ' +
+          'think it actually is (hi, mr, kok, gu, kn, ta, te, en and so on). If it matches ' +
+          'the expected language, or you are unsure, set it to null. Do not guess from a ' +
+          'few shared words — only flag a clear mismatch.\n\n' +
           'If the text contains no recipe, return empty arrays. ' +
           'Never explain, apologize, or write anything outside the JSON object.',
         messages: [
           {
             role: 'user',
-            content: `Parse this recipe into ingredients and steps:\n\n${description}`
+            content:
+              `The transcript below was produced expecting the language "${expectedLanguage || 'unknown'}".\n\n` +
+              `Parse it into ingredients and steps, and judge whether that language was right.\n\n${description}`
           }
         ]
       },
@@ -103,7 +114,11 @@ export const parseRecipeDescription = async (description) => {
     return {
       ingredients: Array.isArray(parsed.ingredients) ? parsed.ingredients : [],
       steps: Array.isArray(parsed.steps) ? parsed.steps : [],
-      glossary: Array.isArray(parsed.glossary) ? parsed.glossary : []
+      glossary: Array.isArray(parsed.glossary) ? parsed.glossary : [],
+      language_mismatch:
+        typeof parsed.language_mismatch === 'string' && parsed.language_mismatch.trim()
+          ? parsed.language_mismatch.trim()
+          : null
     };
   } catch (error) {
     console.error('Claude error:', error.response?.data || error.message);

@@ -284,26 +284,65 @@ def process_queue(headers):
                 lang = item.get("language") or DEFAULT_LANG
                 t0 = time.time()
 
-                if lang in GOOGLE_LANGS:
-                    text = transcribe_google(tmp_path, GOOGLE_LANGS[lang])
-                else:
+                def run(code):
+                    nonlocal model, torch
+                    if code in GOOGLE_LANGS:
+                        return transcribe_google(tmp_path, GOOGLE_LANGS[code])
                     if model is None:
                         model, torch = load_model()
-                    text = transcribe(model, torch, tmp_path, lang)
+                    return transcribe(model, torch, tmp_path, code)
+
+                text = run(lang)
+
+                # An empty result almost always means the wrong language was
+                # chosen. English through an Indic model gives nothing, and the
+                # reverse is also true, so one automatic retry across that line
+                # rescues the common mistake without anyone noticing.
+                if not text or not text.strip():
+                    fallback = DEFAULT_LANG if lang in GOOGLE_LANGS else "en"
+                    log(f"  empty on {lang}, retrying as {fallback}")
+                    retry = run(fallback)
+                    if retry and retry.strip():
+                        text = retry
+                        lang = fallback
+                        log(f"  retry succeeded as {fallback}")
                 log(f"  {time.time() - t0:.0f}s -> {text[:120]}")
+
+                # An empty result is a failure, not a success. It almost always
+                # means the recording is in a different language than the row
+                # says. Marked final so it stops retrying — a retry would give
+                # the same empty answer every minute forever.
+                if not text or not text.strip():
+                    log("  empty transcript — recording the failure")
+                    requests.patch(
+                        f"{API_URL}/audio/{audio_id}/transcript",
+                        headers=headers,
+                        json={
+                            "error_message": (
+                                "No speech recognised. The recording may be in a "
+                                "different language than the one selected."
+                            ),
+                            "final": True,
+                        },
+                        timeout=30,
+                    )
+                    continue
 
                 pr = requests.patch(
                     f"{API_URL}/audio/{audio_id}/transcript",
                     headers=headers,
-                    json={"transcript": text},
+                    json={"transcript": text, "language_used": lang},
                     timeout=120,
                 )
                 pr.raise_for_status()
                 body = pr.json()
-                log(
-                    f"  saved: {body.get('parsed_ingredients', 0)} ingredients, "
-                    f"{body.get('parsed_steps', 0)} steps"
-                )
+                if body.get("requeued_as"):
+                    log(f"  looks like {body['requeued_as']}, not {lang} — will redo")
+                else:
+                    log(
+                        f"  saved: {body.get('parsed_ingredients', 0)} ingredients, "
+                        f"{body.get('parsed_steps', 0)} steps"
+                    )
                 done += 1
 
             except Exception as err:

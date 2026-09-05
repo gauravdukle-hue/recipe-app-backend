@@ -125,13 +125,23 @@ router.get('/queue/pending', authMiddleware, async (req, res) => {
 router.patch('/:audioId/transcript', authMiddleware, async (req, res) => {
   try {
     const { audioId } = req.params;
-    const { transcript, error_message } = req.body;
+    const { transcript, error_message, language_used } = req.body;
 
     if (error_message) {
-      await db.query(
-        'UPDATE recipe_audio SET transcribe_error = $1 WHERE id = $2',
-        [error_message, audioId]
-      );
+      // A transient failure (missing key, network) stays pending so the next
+      // poll retries it. A final one — nothing recognised — is marked done, or
+      // the worker would repeat the same empty attempt every minute.
+      if (req.body.final) {
+        await db.query(
+          'UPDATE recipe_audio SET transcribe_error = $1, transcribed_at = NOW() WHERE id = $2',
+          [error_message, audioId]
+        );
+      } else {
+        await db.query(
+          'UPDATE recipe_audio SET transcribe_error = $1 WHERE id = $2',
+          [error_message, audioId]
+        );
+      }
       return res.json({ message: 'Error recorded' });
     }
 
@@ -139,11 +149,15 @@ router.patch('/:audioId/transcript', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'transcript required' });
     }
 
+    if (language_used) {
+      await db.query('UPDATE recipe_audio SET language = $1 WHERE id = $2', [language_used, audioId]);
+    }
+
     const result = await db.query(
       `UPDATE recipe_audio
           SET transcript = $1, transcribed_at = NOW(), transcribe_error = NULL
         WHERE id = $2
-        RETURNING id, recipe_id`,
+        RETURNING id, recipe_id, language, language_retried`,
       [transcript, audioId]
     );
 
@@ -173,7 +187,7 @@ router.patch('/:audioId/transcript', authMiddleware, async (req, res) => {
       await db.query('DELETE FROM ingredients WHERE recipe_id = $1', [recipe_id]);
       await db.query('DELETE FROM steps WHERE recipe_id = $1', [recipe_id]);
 
-      parsed = await parseRecipeDescription(transcript);
+      parsed = await parseRecipeDescription(transcript, result.rows[0].language);
 
       await db.query('UPDATE recipes SET glossary = $1 WHERE id = $2',
         [JSON.stringify(parsed.glossary || []), recipe_id]);
@@ -194,9 +208,29 @@ router.patch('/:audioId/transcript', authMiddleware, async (req, res) => {
       }
     }
 
+    // Hindi spoken into a Konkani model produces plausible Devanagari rather
+    // than an empty result, so there is no failure to catch — only Claude
+    // reading the text can tell. One retry, tracked by a flag, so a model that
+    // keeps disagreeing can't put this in a loop.
+    const row = result.rows[0];
+    const mismatch = parsed.language_mismatch;
+    let requeued = false;
+
+    if (mismatch && mismatch !== row.language && !row.language_retried) {
+      await db.query(
+        `UPDATE recipe_audio
+            SET language = $1, transcribed_at = NULL, language_retried = TRUE
+          WHERE id = $2`,
+        [mismatch, audioId]
+      );
+      requeued = true;
+      console.log(`Audio ${audioId}: looks like ${mismatch}, not ${row.language} — re-queued`);
+    }
+
     res.json({
       message: 'Transcript saved',
       recipe_id,
+      requeued_as: requeued ? mismatch : null,
       parsed_ingredients: parsed.ingredients.length,
       parsed_steps: parsed.steps.length,
       description_updated: isPlaceholder
