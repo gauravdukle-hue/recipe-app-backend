@@ -55,20 +55,23 @@ export const parseRecipeDescription = async (description) => {
           'You are a recipe parsing assistant for a Goan family cookbook. Input may be in ' +
           'English, or in Konkani or Marathi written in Devanagari, and may come from ' +
           'imperfect speech recognition.\n\n' +
-          'Write STEP INSTRUCTIONS in plain English, so anyone in the family can follow ' +
-          'them. Translate the cooking actions and quantities.\n\n' +
-          'But keep INGREDIENT NAMES in the original language, transliterated into roman ' +
-          'script (khobrem, kando, tikhat pitho, bimbli). Do not translate them to English ' +
-          'in the ingredient list, and do not translate them inside the steps either — ' +
-          'write "Fry the khobrem lightly", not "Fry the grated coconut lightly". These are ' +
-          'the names the family uses and the names you would ask for in a shop.\n\n' +
-          'Then list every non-English ingredient name in "glossary" with a short English ' +
-          'meaning, so a reader who does not know the language can still follow along. ' +
-          'List each term once. Ingredients already in English need no glossary entry.\n\n' +
+          'TRANSLATE the recipe into natural English — real English, not a transliteration ' +
+          'and not a word-for-word rendering. Step instructions should read the way an ' +
+          'English cookbook would write them.\n\n' +
+          'INGREDIENT NAMES are the one exception. Keep the original word, transliterated ' +
+          'into roman script, followed by the English meaning in brackets: ' +
+          '"khobrem (grated coconut)", "tikhat pitho (chilli powder)". These are the names ' +
+          'the family uses, and some have no clean English equivalent.\n\n' +
+          'Inside the steps, use the ORIGINAL name alone, without the bracket — ' +
+          '"Fry the khobrem lightly until golden." The bracketed meaning appears only in ' +
+          'the ingredient list. An ingredient that is already English needs no bracket.\n\n' +
+          'Then list every non-English ingredient name in "glossary" with its English ' +
+          'meaning. List each term once.\n\n' +
           'Return ONLY valid JSON with this structure:\n' +
-          '{"ingredients": [{"amount": "2", "unit": "cups", "name": "khobrem"}], ' +
-          '"steps": [{"step_number": 1, "instruction": "Fry the khobrem lightly."}], ' +
+          '{"ingredients": [{"amount": "2", "unit": "cups", "name": "khobrem (grated coconut)"}], ' +
+          '"steps": [{"step_number": 1, "instruction": "Fry the khobrem lightly until golden."}], ' +
           '"glossary": [{"term": "khobrem", "meaning": "grated coconut"}]}\n\n' +
+          'Convert quantities into standard English measures where the original is clear. ' +
           'If a word is garbled and you cannot identify it, keep it as transliterated and ' +
           'give its meaning as "unclear" rather than guessing a plausible ingredient. ' +
           'If the text contains no recipe, return empty arrays. ' +
