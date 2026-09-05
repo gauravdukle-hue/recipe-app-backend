@@ -194,6 +194,86 @@ router.delete('/:id', authMiddleware, async (req, res) => {
   }
 });
 
+// --- Sharing -------------------------------------------------------------
+
+async function assertOwner(recipe_id, user_id) {
+  const r = await db.query('SELECT owner_id FROM recipes WHERE id = $1', [recipe_id]);
+  if (r.rows.length === 0) return 'missing';
+  return r.rows[0].owner_id === user_id ? 'ok' : 'forbidden';
+}
+
+router.get('/:id/shares', authMiddleware, async (req, res) => {
+  try {
+    const status = await assertOwner(req.params.id, req.user.user_id);
+    if (status === 'missing') return res.status(404).json({ error: 'Recipe not found' });
+    if (status === 'forbidden') return res.status(403).json({ error: 'Not your recipe' });
+
+    const result = await db.query(
+      `SELECT u.id, u.name, u.email
+         FROM recipe_shares s JOIN users u ON u.id = s.shared_with_user_id
+        WHERE s.recipe_id = $1
+        ORDER BY u.name`,
+      [req.params.id]
+    );
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Share list failed:', error);
+    res.status(500).json({ error: 'Could not load sharing' });
+  }
+});
+
+router.post('/:id/shares', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const email = (req.body.email || '').trim().toLowerCase();
+
+    const status = await assertOwner(id, req.user.user_id);
+    if (status === 'missing') return res.status(404).json({ error: 'Recipe not found' });
+    if (status === 'forbidden') return res.status(403).json({ error: 'Not your recipe' });
+
+    if (!email) return res.status(400).json({ error: 'An email is needed' });
+
+    const person = await db.query('SELECT id, name FROM users WHERE lower(email) = $1', [email]);
+    if (person.rows.length === 0) {
+      // Saying so is necessary here — otherwise the owner has no way to know
+      // why nothing happened. They need to sign in once before being shared with.
+      return res.status(404).json({ error: 'No account with that email yet. Ask them to sign in once first.' });
+    }
+
+    if (person.rows[0].id === req.user.user_id) {
+      return res.status(400).json({ error: 'This is already your recipe' });
+    }
+
+    await db.query(
+      `INSERT INTO recipe_shares (recipe_id, shared_with_user_id) VALUES ($1, $2)
+       ON CONFLICT DO NOTHING`,
+      [id, person.rows[0].id]
+    );
+
+    res.status(201).json({ message: 'Shared', name: person.rows[0].name });
+  } catch (error) {
+    console.error('Share failed:', error);
+    res.status(500).json({ error: 'Could not share this recipe' });
+  }
+});
+
+router.delete('/:id/shares/:userId', authMiddleware, async (req, res) => {
+  try {
+    const status = await assertOwner(req.params.id, req.user.user_id);
+    if (status === 'missing') return res.status(404).json({ error: 'Recipe not found' });
+    if (status === 'forbidden') return res.status(403).json({ error: 'Not your recipe' });
+
+    await db.query(
+      'DELETE FROM recipe_shares WHERE recipe_id = $1 AND shared_with_user_id = $2',
+      [req.params.id, req.params.userId]
+    );
+    res.json({ message: 'Sharing removed' });
+  } catch (error) {
+    console.error('Unshare failed:', error);
+    res.status(500).json({ error: 'Could not update sharing' });
+  }
+});
+
 const REACTIONS = ['like', 'love'];
 
 // Counts for a recipe, plus which ones this user has already given.
