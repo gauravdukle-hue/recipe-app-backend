@@ -121,6 +121,41 @@ router.get('/queue/pending', authMiddleware, async (req, res) => {
   }
 });
 
+// Put a recording back in the queue. This exists so nobody has to open a
+// database console to unstick a recipe — which is what the alternative was.
+router.post('/:audioId/retry', authMiddleware, async (req, res) => {
+  try {
+    const { audioId } = req.params;
+    const owner = await db.query(
+      `SELECT r.owner_id FROM recipe_audio a JOIN recipes r ON r.id = a.recipe_id
+        WHERE a.id = $1`,
+      [audioId]
+    );
+    if (owner.rows.length === 0) return res.status(404).json({ error: 'Recording not found' });
+    if (owner.rows[0].owner_id !== req.user.user_id) {
+      return res.status(403).json({ error: 'Not your recipe' });
+    }
+
+    const { language } = req.body;
+
+    await db.query(
+      `UPDATE recipe_audio
+          SET transcribed_at = NULL,
+              transcribe_error = NULL,
+              transcribe_attempts = 0,
+              language_retried = FALSE,
+              language = COALESCE($1, language)
+        WHERE id = $2`,
+      [language || null, audioId]
+    );
+
+    res.json({ message: 'Queued again' });
+  } catch (error) {
+    console.error('Retry failed:', error);
+    res.status(500).json({ error: 'Could not queue that recording' });
+  }
+});
+
 // Transcription write-back from the worker.
 router.patch('/:audioId/transcript', authMiddleware, async (req, res) => {
   try {
@@ -128,20 +163,43 @@ router.patch('/:audioId/transcript', authMiddleware, async (req, res) => {
     const { transcript, error_message, language_used } = req.body;
 
     if (error_message) {
-      // A transient failure (missing key, network) stays pending so the next
-      // poll retries it. A final one — nothing recognised — is marked done, or
-      // the worker would repeat the same empty attempt every minute.
+      // "final" means the worker got no text at all. That looked like a
+      // permanent wrong-language failure, but it also happens intermittently —
+      // the same recording came back empty once and transcribed fine on the
+      // next run. So give it a few goes before calling it done, or a hiccup
+      // becomes a recipe that needs unsticking by hand.
       if (req.body.final) {
-        await db.query(
-          'UPDATE recipe_audio SET transcribe_error = $1, transcribed_at = NOW() WHERE id = $2',
+        const bumped = await db.query(
+          `UPDATE recipe_audio
+              SET transcribe_attempts = COALESCE(transcribe_attempts, 0) + 1,
+                  transcribe_error = $1
+            WHERE id = $2
+            RETURNING transcribe_attempts`,
           [error_message, audioId]
         );
-      } else {
-        await db.query(
-          'UPDATE recipe_audio SET transcribe_error = $1 WHERE id = $2',
-          [error_message, audioId]
-        );
+
+        const attempts = bumped.rows[0]?.transcribe_attempts || 1;
+        const MAX_ATTEMPTS = 3;
+
+        if (attempts >= MAX_ATTEMPTS) {
+          await db.query(
+            `UPDATE recipe_audio
+                SET transcribed_at = NOW(),
+                    transcribe_error = $1
+              WHERE id = $2`,
+            [`${error_message} (tried ${attempts} times)`, audioId]
+          );
+          return res.json({ message: 'Given up', attempts });
+        }
+
+        // Left pending, so the next poll picks it up again.
+        return res.json({ message: 'Will retry', attempts });
       }
+
+      await db.query(
+        'UPDATE recipe_audio SET transcribe_error = $1 WHERE id = $2',
+        [error_message, audioId]
+      );
       return res.json({ message: 'Error recorded' });
     }
 
