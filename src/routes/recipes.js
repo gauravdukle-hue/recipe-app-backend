@@ -72,7 +72,11 @@ router.get('/', authMiddleware, async (req, res) => {
                WHERE a.recipe_id = r.id AND a.transcribed_at IS NULL) as audio_pending,
              (SELECT COUNT(*) FROM recipe_audio a
                WHERE a.recipe_id = r.id AND a.transcribed_at IS NOT NULL
-                 AND a.transcribe_error IS NOT NULL) as audio_failed
+                 AND a.transcribe_error IS NOT NULL) as audio_failed,
+             (SELECT COUNT(*) FROM recipe_reactions
+               WHERE recipe_id = r.id AND reaction = 'like') as like_count,
+             (SELECT COUNT(*) FROM recipe_reactions
+               WHERE recipe_id = r.id AND reaction = 'love') as love_count
       FROM recipes r JOIN users u ON r.owner_id = u.id WHERE r.deleted_at IS NULL
     `;
     const params = [];
