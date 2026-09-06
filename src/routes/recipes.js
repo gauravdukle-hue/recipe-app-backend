@@ -65,7 +65,14 @@ router.get('/', authMiddleware, async (req, res) => {
     let query = `
       SELECT r.id, r.title, r.cuisine_tag, r.owner_id, u.name as owner_name, r.created_at,
              (SELECT COUNT(*) FROM ingredients WHERE recipe_id = r.id) as ingredient_count,
-             (SELECT COUNT(*) FROM steps WHERE recipe_id = r.id) as step_count
+             (SELECT COUNT(*) FROM steps WHERE recipe_id = r.id) as step_count,
+             -- So the library can show progress without anyone opening a recipe
+             -- to find out whether transcription finished.
+             (SELECT COUNT(*) FROM recipe_audio a
+               WHERE a.recipe_id = r.id AND a.transcribed_at IS NULL) as audio_pending,
+             (SELECT COUNT(*) FROM recipe_audio a
+               WHERE a.recipe_id = r.id AND a.transcribed_at IS NOT NULL
+                 AND a.transcribe_error IS NOT NULL) as audio_failed
       FROM recipes r JOIN users u ON r.owner_id = u.id WHERE r.deleted_at IS NULL
     `;
     const params = [];
