@@ -83,13 +83,27 @@ export const parseRecipeDescription = async (description, expectedLanguage) => {
           'think it actually is (hi, mr, kok, gu, kn, ta, te, en and so on). If it matches ' +
           'the expected language, or you are unsure, set it to null. Do not guess from a ' +
           'few shared words — only flag a clear mismatch.\n\n' +
+          'The transcript may be ONE person dictating, or TWO OR MORE people talking ' +
+          'the recipe through together. Speakers are not labelled and turns are not ' +
+          'marked, so work it out from the text. In a conversation, expect questions ' +
+          '("how much salt?"), answers, interruptions, and talk that is not about the ' +
+          'cooking at all. Extract the recipe that the speakers end up agreeing on.\n\n' +
+          'When someone CORRECTS an earlier statement, the correction wins — "half a ' +
+          'kilo, no wait, a quarter kilo" is a quarter kilo. When someone REORDERS a ' +
+          'step ("put the coconut in first, before the onions"), follow the corrected ' +
+          'order. Drop greetings, asides, and anything unrelated to the dish.\n\n' +
+          'Do NOT invent a quantity or a step that nobody said. If the speakers never ' +
+          'settle how much of something to use, give that ingredient an empty amount ' +
+          'rather than a plausible-sounding number — a wrong quantity in a family ' +
+          'cookbook is worse than a missing one.\n\n' +
           'If the text contains no recipe, return empty arrays. ' +
           'Never explain, apologize, or write anything outside the JSON object.',
         messages: [
           {
             role: 'user',
             content:
-              `The transcript below was produced expecting the language "${expectedLanguage || 'unknown'}".\n\n` +
+              `The transcript below was produced expecting the language "${expectedLanguage || 'unknown'}". ` +
+              `It may be one person dictating or several people talking it through.\n\n` +
               `Parse it into ingredients and steps, and judge whether that language was right.\n\n${description}`
           }
         ]
